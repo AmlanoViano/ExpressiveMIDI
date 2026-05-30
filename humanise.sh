@@ -7,13 +7,17 @@ echo "================================"
 # Activate venv
 source "$(dirname "$0")/venv/bin/activate"
 
-# Find latest model
+# Find latest models
 MODEL=$(ls -t experiments/best_hybrid_*.pt 2>/dev/null | head -1)
+EXPR_MODEL=$(ls -t experiments/best_expression_*.pt 2>/dev/null | head -1)
 if [ -z "$MODEL" ]; then
     echo "ERROR: No trained model found in experiments/"
     exit 1
 fi
-echo "Using model: $MODEL"
+echo "Using timing model: $MODEL"
+if [ -n "$EXPR_MODEL" ]; then
+    echo "Using expression model: $EXPR_MODEL"
+fi
 
 # Get input file
 read -p "Enter path to input MIDI file: " INPUT
@@ -34,11 +38,20 @@ STRENGTH="${STRENGTH:-1.0}"
 
 echo ""
 echo "Processing..."
-python -m src.inference.humanise \
-    --input "$INPUT" \
-    --output "$OUTPUT" \
-    --model "$MODEL" \
-    --strength "$STRENGTH"
+if [ -n "$EXPR_MODEL" ]; then
+    python -m src.inference.humanise \
+        --input "$INPUT" \
+        --output "$OUTPUT" \
+        --model "$MODEL" \
+        --expr_model "$EXPR_MODEL" \
+        --strength "$STRENGTH"
+else
+    python -m src.inference.humanise \
+        --input "$INPUT" \
+        --output "$OUTPUT" \
+        --model "$MODEL" \
+        --strength "$STRENGTH"
+fi
 
 echo ""
 echo "Done! Output saved to: $OUTPUT"
