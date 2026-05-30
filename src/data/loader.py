@@ -85,6 +85,7 @@ def process_dataset(maestro_dir: str, output_dir: str,
             df = extract_deviations_single(path)
             if df is None:
                 continue
+            df = augment_with_quantised(df, prob=0.3)
             df['piece_id'] = idx
             df['composer'] = row['canonical_composer']
             df['title']    = row['canonical_title']
@@ -107,3 +108,19 @@ def process_dataset(maestro_dir: str, output_dir: str,
         return combined
     return None
  
+
+def augment_with_quantised(df: pd.DataFrame, prob: float = 0.3) -> pd.DataFrame:
+    """
+    With probability prob, replace onset_score with perfectly quantised onsets.
+    This teaches the model to humanise grid-aligned input.
+    """
+    if np.random.random() > prob:
+        return df
+    df = df.copy()
+    ioi_mean = df["local_ioi"].median()
+    quantised = np.round(df["onset"].values / ioi_mean) * ioi_mean
+    df["onset_score"] = quantised
+    df["deviation_ms"] = (df["onset"].values - quantised) * 1000.0
+    df["deviation_ms"] = df["deviation_ms"].clip(-200, 200)
+    df["local_ioi"] = ioi_mean
+    return df

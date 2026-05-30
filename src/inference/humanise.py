@@ -42,33 +42,51 @@ def midi_to_df(midi_path: str) -> tuple:
 def predict_deviations(model, df: pd.DataFrame, device: torch.device,
                        seq_len: int = 64) -> np.ndarray:
     df_feat = add_features(df)
-
-    # Normalise (use dataset statistics approximation)
     means = df_feat[FEATURE_COLS].mean()
     stds  = df_feat[FEATURE_COLS].std().replace(0, 1)
     features = ((df_feat[FEATURE_COLS] - means) / stds).values.astype(np.float32)
 
     n = len(features)
+    seq_len = min(seq_len, n)
+    stride  = max(1, seq_len // 2)
+
     deviations = np.zeros(n)
     counts     = np.zeros(n)
 
     with torch.no_grad():
-        for i in range(0, n - seq_len + 1, seq_len // 2):
+        for i in range(0, n, stride):
             chunk = features[i:i+seq_len]
             if len(chunk) < seq_len:
-                break
+                # pad end only
+                chunk = np.pad(chunk, ((0, seq_len-len(chunk)), (0,0)))
             x = torch.tensor(chunk).unsqueeze(0).to(device)
             pred = model(x).squeeze(0).cpu().numpy()
-            deviations[i:i+seq_len] += pred
-            counts[i:i+seq_len]     += 1
+            end = min(i+seq_len, n)
+            length = end - i
+            # only use middle half of each window to avoid boundary artifacts
+            mid_start = seq_len // 4
+            mid_end   = seq_len - seq_len // 4
+            use_start = max(0, mid_start - i) if i == 0 else mid_start
+            use_end   = min(mid_end, length)
+            real_start = i + (use_start if i > 0 else 0)
+            real_end   = i + use_end
+            if real_end > real_start:
+                deviations[real_start:real_end] += pred[use_start if i > 0 else 0:use_end]
+                counts[real_start:real_end]     += 1
 
-    counts = np.maximum(counts, 1)
+    # fallback for any uncovered notes
+    mask = counts == 0
+    if mask.any():
+        counts[mask] = 1
+
     return deviations / counts
 
 
 def apply_deviations(midi: pretty_midi.PrettyMIDI, df: pd.DataFrame,
                      deviations: np.ndarray, strength: float = 1.0) -> pretty_midi.PrettyMIDI:
-    new_midi = pretty_midi.PrettyMIDI(initial_tempo=midi.estimate_tempo())
+    tempo_times, tempos = midi.get_tempo_changes()
+    initial_tempo = tempos[0] if len(tempos) > 0 else 120.0
+    new_midi = pretty_midi.PrettyMIDI(initial_tempo=initial_tempo)
     inst_out = pretty_midi.Instrument(program=0)
 
     for idx, (_, row) in enumerate(df.iterrows()):
@@ -100,6 +118,7 @@ def humanise(input_path: str, output_path: str, model_path: str,
     deviations = predict_deviations(model, df, device, seq_len)
 
     print(f"Predicted deviations: mean={deviations.mean():.2f}ms std={deviations.std():.2f}ms")
+    deviations -= deviations.mean()  # remove bias
     new_midi = apply_deviations(midi, df, deviations, strength)
     new_midi.write(output_path)
     print(f"Saved humanised MIDI → {output_path}")
