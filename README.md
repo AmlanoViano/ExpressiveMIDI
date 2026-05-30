@@ -1,6 +1,6 @@
 # ExpressiveMIDI
 
-Most MIDI files sound robotic. Not because the notes are wrong, but because every note lands exactly on the beat — something no human pianist ever does. The micro-timing deviations that make a performance feel alive, the subtle rush into a climax or the gentle linger on a phrase ending, are completely absent.
+Most MIDI files sound robotic because every note lands exactly on the beat, something that is not possible when playing physically. The micro-timing deviations that make a performance feel alive and genuine are completely absent.
 
 ExpressiveMIDI is an attempt to learn those deviations from real performances and apply them to any MIDI file.
 
@@ -18,13 +18,13 @@ pip install -r requirements.txt
 bash humanise.sh
 ```
 
-The script will ask for your input file, output name, and strength — no terminal commands needed.
+The script will ask for your input file, output name, and strength.
 
 ---
 
 ## How it works
 
-The model is trained on [MAESTRO v3](https://magenta.tensorflow.org/datasets/maestro) — 962 professional piano competition recordings where every keypress is captured with millisecond precision. For each note, we compute how much the pianist deviated from a quantised grid (the "score"), and train the model to predict those deviations from musical context alone: pitch, rhythm, velocity, phrase position, harmonic interval, and local tempo.
+The model is trained on [MAESTRO v3](https://magenta.tensorflow.org/datasets/maestro) - 962 professional piano competition recordings where every keypress is captured with millisecond precision. For each note, we compute how much the pianist deviated from a quantised grid (the "score"), and train the model to predict those deviations from musical context alone: pitch, rhythm, velocity, phrase position, harmonic interval, and local tempo.
 
 At inference time, the model reads any MIDI file and outputs a per-note timing deviation in milliseconds. These are applied back to the file, shifting notes slightly earlier or later in a musically coherent way.
 
@@ -34,8 +34,8 @@ At inference time, the model reads any MIDI file and outputs a per-note timing d
 
 After testing a BiLSTM baseline and a pure Transformer, the best results came from a hybrid:
 
-- **CNN layers** (kernels 3, 5, 7) capture local note-group patterns — phrase shapes, ornaments, chord approaches
-- **Transformer encoder** (4 heads, 3 layers) models long-range dependencies — how the timing of a note 30 notes ago influences the current one
+- **CNN layers** (kernels 3, 5, 7) capture local note-group patterns - phrase shapes, ornaments, chord approaches
+- **Transformer encoder** (4 heads, 3 layers) models long-range dependencies - how the timing of a note 30 notes ago influences the current one
 - **Separate prediction head** with GELU activations
 
 | Model | MAE (ms) |
@@ -126,6 +126,7 @@ The `--strength` parameter scales the predicted deviations. `0.5` is subtle, `1.
 
 ## Project Structure
 
+```
 ExpressiveMIDI/
 ├── src/
 │   ├── data/
@@ -144,15 +145,7 @@ ExpressiveMIDI/
 ├── experiments/            # Model checkpoints and training histories
 ├── notebooks/              # Exploratory analysis
 └── docs/                   # Writeup and figures
----
-
-## Roadmap
-
-- [ ] Velocity and pedal prediction (separate specialised model)
-- [ ] Performer style cloning — condition on a specific pianist's embedding
-- [ ] Multi-instrument support beyond piano
-- [ ] Interactive web demo
-
+```
 ---
 
 ## Acknowledgements
