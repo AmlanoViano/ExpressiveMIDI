@@ -10,8 +10,13 @@ from src.models.expression import ExpressionModel
 
 
 def load_timing_model(model_path, input_dim, device):
-    model = HybridTimingModel(input_dim=input_dim).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    from src.models.hybrid_strings import HybridTimingModel as StringsModel
+    try:
+        model = HybridTimingModel(input_dim=input_dim).to(device)
+        model.load_state_dict(torch.load(model_path, map_location=device))
+    except RuntimeError:
+        model = StringsModel(input_dim=input_dim).to(device)
+        model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
     return model
 
@@ -88,7 +93,14 @@ def humanise(input_path, output_path, timing_model_path, expression_model_path=N
     print(f"Loaded {len(df)} notes")
 
     # Timing predictions
-    timing_devs = predict(timing_model, df, device)
+    pitch_bend_preds = None
+    raw_preds = predict(timing_model, df, device)
+    if raw_preds.ndim == 2:
+        timing_devs = raw_preds[:, 0] * 200.0
+        pitch_bend_preds = raw_preds[:, 1]
+    else:
+        timing_devs = raw_preds
+        pitch_bend_preds = None
     timing_devs -= timing_devs.mean()
     print(f"Timing - mean={timing_devs.mean():.2f}ms std={timing_devs.std():.2f}ms")
 
@@ -133,6 +145,36 @@ def humanise(input_path, output_path, timing_model_path, expression_model_path=N
     for i in range(len(inst_out.notes) - 1):
         if inst_out.notes[i].end > inst_out.notes[i+1].start:
             inst_out.notes[i].end = inst_out.notes[i+1].start - 0.001
+
+    # Apply vibrato (sinusoidal pitch bend) if strings model
+    if pitch_bend_preds is not None:
+        VIBRATO_RATE   = 5.5
+        VIBRATO_POINTS = 30
+        MAX_DEPTH      = 300
+        MIN_NOTE_DUR   = 0.12
+        note_list = sorted(inst_out.notes, key=lambda n: n.start)
+        for idx, (_, row) in enumerate(df.iterrows()):
+            if idx >= len(note_list):
+                break
+            note     = note_list[idx]
+            duration = note.end - note.start
+            depth    = abs(float(pitch_bend_preds[idx])) * MAX_DEPTH
+            if duration < MIN_NOTE_DUR or depth < 20:
+                inst_out.pitch_bends.append(pretty_midi.PitchBend(0, float(note.start)))
+                inst_out.pitch_bends.append(pretty_midi.PitchBend(0, float(note.end)))
+                continue
+            vib_start = note.start + duration * 0.2
+            vib_end   = note.end   - duration * 0.05
+            times = np.linspace(vib_start, vib_end, VIBRATO_POINTS)
+            for t in times:
+                phase    = (t - vib_start) / max(vib_end - vib_start, 0.001)
+                envelope = min(1.0, phase / 0.3)
+                angle    = 2 * np.pi * VIBRATO_RATE * (t - vib_start)
+                pb_val   = int(np.clip(np.sin(angle) * depth * envelope, -8192, 8191))
+                inst_out.pitch_bends.append(pretty_midi.PitchBend(pb_val, float(t)))
+            inst_out.pitch_bends.append(pretty_midi.PitchBend(0, float(note.end)))
+        inst_out.pitch_bends.sort(key=lambda pb: pb.time)
+
     new_midi.instruments.append(inst_out)
     new_midi.write(output_path)
     print(f"Saved -> {output_path}")

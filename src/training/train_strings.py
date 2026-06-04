@@ -1,6 +1,3 @@
-"""
-train.py - Training loop with GPU optimisation, early stopping.
-"""
 import os
 import json
 import torch
@@ -10,58 +7,46 @@ import pandas as pd
 from tqdm import tqdm
 from datetime import datetime
 
-from src.data.dataset import NoteSequenceDataset
-from src.models.baseline import LSTMBaseline
+from src.data.strings_dataset import StringsDataset
+from src.models.hybrid_strings import HybridTimingModel
 from src.data.features import FEATURE_COLS
 
 
 def train(
-    data_path: str = "data/processed/strings_train.parquet",
-    val_path: str = "data/processed/strings_val.parquet",
-    output_dir: str = "experiments",
-    model_type: str = "lstm",
-    seq_len: int = 64,
-    batch_size: int = 128,
-    hidden_dim: int = 256,
-    num_layers: int = 2,
-    lr: float = 1e-3,
-    epochs: int = 60,
-    patience: int = 8,
+    data_path="data/processed/strings_train.parquet",
+    val_path="data/processed/strings_val.parquet",
+    output_dir="experiments",
+    model_type="hybrid",
+    seq_len=64,
+    batch_size=128,
+    hidden_dim=256,
+    num_layers=2,
+    lr=3e-4,
+    epochs=60,
+    patience=8,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device} | Model: {model_type}")
+    print(f"Device: {device} | Strings model with pitch bend")
 
     train_df = pd.read_parquet(data_path)
     val_df   = pd.read_parquet(val_path)
 
-    train_ds = NoteSequenceDataset(train_df, seq_len=seq_len)
-    val_ds   = NoteSequenceDataset(val_df,   seq_len=seq_len)
+    train_ds = StringsDataset(train_df, seq_len=seq_len)
+    val_ds   = StringsDataset(val_df,   seq_len=seq_len)
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                              num_workers=4, pin_memory=True)
-    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
-                              num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=4, pin_memory=True)
+    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
-    if model_type == "transformer":
-        from src.models.transformer import TimingTransformer
-        model = TimingTransformer(input_dim=len(FEATURE_COLS)).to(device)
-    elif model_type == "hybrid":
-        from src.models.hybrid_strings import HybridTimingModel
-        model = HybridTimingModel(input_dim=len(FEATURE_COLS)).to(device)
-    else:
-        model = LSTMBaseline(input_dim=len(FEATURE_COLS), hidden_dim=hidden_dim,
-                             num_layers=num_layers, dropout=0.3).to(device)
-
+    model     = HybridTimingModel(input_dim=len(FEATURE_COLS)).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-3)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=3
-    )
-    criterion = nn.HuberLoss(delta=20.0)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
+    criterion_timing = nn.HuberLoss(delta=0.5)
+    criterion_pb     = nn.HuberLoss(delta=0.1)
     scaler    = torch.amp.GradScaler()
 
-    best_val_loss  = float('inf')
-    epochs_no_improve = 0
-    run_id = f"{model_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    best_val   = float("inf")
+    no_improve = 0
+    run_id     = f"strings_{datetime.now().strftime("%Y%m%d_%H%M%S")}"
     os.makedirs(output_dir, exist_ok=True)
 
     history = []
@@ -71,9 +56,12 @@ def train(
         for x, y in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
-            with torch.amp.autocast(device_type='cuda'):
-                pred = model(x)
-                loss = criterion(pred, y)
+            with torch.amp.autocast(device_type="cuda"):
+                pred = model(x)  # (batch, seq, 2)
+                loss = (
+                    1.0 * criterion_timing(pred[..., 0], y[..., 0]) +
+                    0.5 * criterion_pb(pred[..., 1],     y[..., 1])
+                )
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -82,58 +70,54 @@ def train(
             train_loss += loss.item()
 
         model.eval()
-        val_loss = 0.0
-        mae      = 0.0
+        val_loss   = 0.0
+        mae_timing = 0.0
+        mae_pb     = 0.0
         with torch.no_grad():
             for x, y in val_loader:
                 x, y = x.to(device), y.to(device)
-                with torch.amp.autocast(device_type='cuda'):
+                with torch.amp.autocast(device_type="cuda"):
                     pred = model(x)
-                val_loss += criterion(pred, y).item()
-                mae      += (pred - y).abs().mean().item()
+                loss = (
+                    1.0 * criterion_timing(pred[..., 0], y[..., 0]) +
+                    0.5 * criterion_pb(pred[..., 1],     y[..., 1])
+                )
+                val_loss   += loss.item()
+                mae_timing += (pred[..., 0] - y[..., 0]).abs().mean().item() * 200
+                mae_pb     += (pred[..., 1] - y[..., 1]).abs().mean().item()
 
         train_loss /= len(train_loader)
         val_loss   /= len(val_loader)
-        mae        /= len(val_loader)
+        mae_timing /= len(val_loader)
+        mae_pb     /= len(val_loader)
         scheduler.step(val_loss)
 
-        print(f"Epoch {epoch+1}: train={train_loss:.2f} val={val_loss:.2f} MAE={mae:.2f}ms")
-        history.append({'epoch': epoch+1, 'train_loss': train_loss,
-                        'val_loss': val_loss, 'mae_ms': mae})
+        print(f"Epoch {epoch+1}: train={train_loss:.4f} val={val_loss:.4f} MAE_timing={mae_timing:.2f}ms MAE_pb={mae_pb:.4f}")
+        history.append({"epoch": epoch+1, "train": train_loss, "val": val_loss,
+                        "mae_timing": mae_timing, "mae_pb": mae_pb})
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            epochs_no_improve = 0
-            torch.save(model.state_dict(),
-                       os.path.join(output_dir, f"best_strings_{run_id}.pt"))
-            print("  ✓ Saved best model")
+        if val_loss < best_val:
+            best_val   = val_loss
+            no_improve = 0
+            torch.save(model.state_dict(), os.path.join(output_dir, f"best_strings_{run_id}.pt"))
+            print("  Saved best model")
         else:
-            epochs_no_improve += 1
-            if epochs_no_improve >= patience:
+            no_improve += 1
+            if no_improve >= patience:
                 print(f"  Early stopping at epoch {epoch+1}")
                 break
 
-    with open(os.path.join(output_dir, f"history_strings_{run_id}.json"), 'w') as f:
+    with open(os.path.join(output_dir, f"history_strings_{run_id}.json"), "w") as f:
         json.dump(history, f, indent=2)
-
-    print(f"\nDone. Best val loss: {best_val_loss:.2f}")
-    return history
+    print(f"Done. Best val: {best_val:.4f}")
 
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="lstm", choices=["lstm", "transformer", "hybrid"])
-    parser.add_argument("--epochs", type=int, default=60)
+    parser.add_argument("--lr",      type=float, default=3e-4)
+    parser.add_argument("--epochs",  type=int,   default=60)
+    parser.add_argument("--patience",type=int,   default=8)
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--patience", type=int, default=8)
     args = parser.parse_args()
-    train(
-        data_path="data/processed/train.parquet",
-        model_type=args.model,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        patience=args.patience,
-    )
+    train(lr=args.lr, epochs=args.epochs, patience=args.patience, batch_size=args.batch_size)

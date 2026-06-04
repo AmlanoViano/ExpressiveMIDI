@@ -53,10 +53,12 @@ class HybridTimingModel(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(d_model // 2, 1)
         )
+        self.head_pitchbend = nn.Sequential(nn.Linear(d_model, d_model//2), nn.GELU(), nn.Dropout(dropout), nn.Linear(d_model//2, 1), nn.Tanh())
 
     def forward(self, x):
-        # x: (batch, seq_len, input_dim)
-        x = self.cnn(x.permute(0, 2, 1)).permute(0, 2, 1)  # CNN expects (B, C, L)
+        x = self.cnn(x.permute(0, 2, 1)).permute(0, 2, 1)
         x = self.pos_enc(x)
         x = self.transformer(x)
-        return self.head(x).squeeze(-1)
+        timing    = self.head(x)
+        pitchbend = self.head_pitchbend(x)
+        return torch.cat([timing, pitchbend], dim=-1)
