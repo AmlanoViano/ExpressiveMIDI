@@ -9,6 +9,7 @@ source "$(dirname "$0")/venv/bin/activate"
 
 # Find latest models
 STYLE_MODEL=""
+STRINGS_MODEL=$(ls -t experiments/best_strings_*.pt 2>/dev/null | head -1)
 MODEL=$(ls -t experiments/best_hybrid_*.pt 2>/dev/null | head -1)
 EXPR_MODEL=$(ls -t experiments/best_expression_*.pt 2>/dev/null | head -1)
 if [ -z "$MODEL" ]; then
@@ -45,6 +46,21 @@ if [ -n "$STYLE_INPUT" ] && [ -f "$STYLE_INPUT" ]; then
 fi
 
 echo ""
+# Ask user for instrument
+echo ""
+echo "Select instrument family:"
+echo "  1) Piano"
+echo "  2) Strings (violin, viola, cello)"
+read -p "Enter choice [1]: " INST_CHOICE
+INST_CHOICE="${INST_CHOICE:-1}"
+
+if [ "$INST_CHOICE" = "2" ] && [ -n "$STRINGS_MODEL" ]; then
+    MODEL="$STRINGS_MODEL"
+    echo "Using strings model: $MODEL"
+elif [ "$INST_CHOICE" = "2" ] && [ -z "$STRINGS_MODEL" ]; then
+    echo "WARNING: No strings model found, using piano model"
+fi
+
 echo "Processing..."
 TIMING_MODEL="${STYLE_MODEL:-$MODEL}"
 if [ -n "$EXPR_MODEL" ]; then

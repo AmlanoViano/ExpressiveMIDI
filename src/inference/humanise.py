@@ -130,6 +130,9 @@ def humanise(input_path, output_path, timing_model_path, expression_model_path=N
         inst_out.control_changes.sort(key=lambda c: c.time)
 
     inst_out.notes.sort(key=lambda n: n.start)
+    for i in range(len(inst_out.notes) - 1):
+        if inst_out.notes[i].end > inst_out.notes[i+1].start:
+            inst_out.notes[i].end = inst_out.notes[i+1].start - 0.001
     new_midi.instruments.append(inst_out)
     new_midi.write(output_path)
     print(f"Saved -> {output_path}")
