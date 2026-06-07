@@ -102,6 +102,10 @@ def humanise(input_path, output_path, timing_model_path, expression_model_path=N
         timing_devs = raw_preds
         pitch_bend_preds = None
     timing_devs -= timing_devs.mean()
+    timing_devs = timing_devs.clip(-50, 50)
+    # Strings: smaller timing shifts to preserve note durations
+    if pitch_bend_preds is not None:
+        timing_devs = timing_devs * 0.4
     print(f"Timing - mean={timing_devs.mean():.2f}ms std={timing_devs.std():.2f}ms")
 
     # Expression predictions
@@ -119,10 +123,15 @@ def humanise(input_path, output_path, timing_model_path, expression_model_path=N
     new_midi = pretty_midi.PrettyMIDI(initial_tempo=initial_tempo)
     inst_out = pretty_midi.Instrument(program=0)
 
+    # Group simultaneous notes — only shift if note is melodically isolated
+    onset_counts = df["onset"].value_counts()
     for idx, (_, row) in enumerate(df.iterrows()):
-        dev_sec   = (timing_devs[idx] * strength) / 1000.0
+        # Reduce shift for simultaneous notes (chords) to avoid reordering
+        is_chord = onset_counts[row["onset"]] > 1
+        dev_sec   = (timing_devs[idx] * strength * (0.3 if is_chord else 1.0)) / 1000.0
         new_start = max(0.0, row["onset"] + dev_sec)
-        new_end   = new_start + row["duration"]
+        orig_duration = row["duration"]
+        new_end   = new_start + orig_duration
         new_vel   = int(row["velocity"])
         if expr_preds is not None:
             vel_dev = expr_preds[idx, 0] * strength
@@ -141,9 +150,14 @@ def humanise(input_path, output_path, timing_model_path, expression_model_path=N
             inst_out.control_changes.append(pretty_midi.ControlChange(67, soft_val,    df.iloc[idx]["onset"]))
         inst_out.control_changes.sort(key=lambda c: c.time)
 
-    inst_out.notes.sort(key=lambda n: n.start)
+    # Sort only for overlap checking, preserve musical integrity
+    # Only clip if same-voice overlap (same pitch class)
+    ordered_notes = list(inst_out.notes)  # preserve df order for vibrato
+    inst_out.notes.sort(key=lambda n: (n.start, n.pitch))
     for i in range(len(inst_out.notes) - 1):
-        if inst_out.notes[i].end > inst_out.notes[i+1].start:
+        if (inst_out.notes[i].end > inst_out.notes[i+1].start and
+            inst_out.notes[i].pitch == inst_out.notes[i+1].pitch and
+            inst_out.notes[i+1].start - inst_out.notes[i].start < 0.05):
             inst_out.notes[i].end = inst_out.notes[i+1].start - 0.001
 
     # Apply vibrato (sinusoidal pitch bend) if strings model
@@ -152,16 +166,19 @@ def humanise(input_path, output_path, timing_model_path, expression_model_path=N
         VIBRATO_POINTS = 30
         MAX_DEPTH      = 300
         MIN_NOTE_DUR   = 0.12
-        note_list = sorted(inst_out.notes, key=lambda n: n.start)
+        note_list = ordered_notes  # use df-order list for correct idx mapping
         for idx, (_, row) in enumerate(df.iterrows()):
             if idx >= len(note_list):
                 break
             note     = note_list[idx]
             duration = note.end - note.start
             depth    = abs(float(pitch_bend_preds[idx])) * MAX_DEPTH
-            if duration < MIN_NOTE_DUR or depth < 20:
+            next_start = note_list[idx+1].start if idx + 1 < len(note_list) else note.end
+            reset_time = min(float(note.end), next_start - 0.005)
+            reset_time = max(float(note.start) + 0.001, reset_time)
+            if duration < MIN_NOTE_DUR or depth < 5:
                 inst_out.pitch_bends.append(pretty_midi.PitchBend(0, float(note.start)))
-                inst_out.pitch_bends.append(pretty_midi.PitchBend(0, float(note.end)))
+                inst_out.pitch_bends.append(pretty_midi.PitchBend(0, reset_time))
                 continue
             vib_start = note.start + duration * 0.2
             vib_end   = note.end   - duration * 0.05
@@ -172,7 +189,7 @@ def humanise(input_path, output_path, timing_model_path, expression_model_path=N
                 angle    = 2 * np.pi * VIBRATO_RATE * (t - vib_start)
                 pb_val   = int(np.clip(np.sin(angle) * depth * envelope, -8192, 8191))
                 inst_out.pitch_bends.append(pretty_midi.PitchBend(pb_val, float(t)))
-            inst_out.pitch_bends.append(pretty_midi.PitchBend(0, float(note.end)))
+            inst_out.pitch_bends.append(pretty_midi.PitchBend(0, reset_time))
         inst_out.pitch_bends.sort(key=lambda pb: pb.time)
 
     new_midi.instruments.append(inst_out)

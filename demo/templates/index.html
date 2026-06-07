@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ExpressiveMIDI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0a0a0a;
+    --surface:  #111111;
+    --border:   #1e1e1e;
+    --accent:   #c8f04d;
+    --accent2:  #4d9ef0;
+    --text:     #e8e8e8;
+    --muted:    #555;
+    --error:    #f04d4d;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "DM Mono", monospace;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 60px 24px;
+  }
+
+  /* Subtle grain overlay */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.4;
+  }
+
+  .container {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 640px;
+  }
+
+  header {
+    margin-bottom: 56px;
+  }
+
+  .eyebrow {
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 12px;
+  }
+
+  h1 {
+    font-family: "Syne", sans-serif;
+    font-size: clamp(2.2rem, 6vw, 3.5rem);
+    font-weight: 800;
+    line-height: 1.0;
+    letter-spacing: -0.03em;
+    color: var(--text);
+  }
+
+  h1 span {
+    color: var(--accent);
+  }
+
+  .subtitle {
+    margin-top: 16px;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 32px;
+    margin-bottom: 16px;
+  }
+
+  .card-label {
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 20px;
+  }
+
+  /* Drop zone */
+  .dropzone {
+    border: 1px dashed var(--border);
+    padding: 40px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    position: relative;
+  }
+
+  .dropzone:hover, .dropzone.drag-over {
+    border-color: var(--accent);
+    background: rgba(200, 240, 77, 0.03);
+  }
+
+  .dropzone input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+  }
+
+  .drop-icon {
+    font-size: 28px;
+    margin-bottom: 12px;
+    display: block;
+  }
+
+  .drop-text {
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .drop-text strong {
+    color: var(--text);
+    display: block;
+    margin-bottom: 4px;
+  }
+
+  .filename {
+    margin-top: 16px;
+    font-size: 11px;
+    color: var(--accent);
+    display: none;
+  }
+
+  /* Controls */
+  .controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  .control-group label {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: block;
+    margin-bottom: 10px;
+  }
+
+  .seg-control {
+    display: flex;
+    border: 1px solid var(--border);
+  }
+
+  .seg-control input { display: none; }
+
+  .seg-control label {
+    flex: 1;
+    text-align: center;
+    padding: 10px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    color: var(--muted);
+    transition: background 0.15s, color 0.15s;
+    letter-spacing: 0.05em;
+    text-transform: none;
+  }
+
+  .seg-control input:checked + label {
+    background: var(--accent);
+    color: #000;
+    font-weight: 500;
+  }
+
+  /* Slider */
+  .slider-wrap {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  input[type="range"] {
+    flex: 1;
+    -webkit-appearance: none;
+    height: 2px;
+    background: var(--border);
+    outline: none;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    background: var(--accent);
+    cursor: pointer;
+    border-radius: 0;
+  }
+
+  .slider-val {
+    font-size: 12px;
+    color: var(--accent);
+    min-width: 28px;
+    text-align: right;
+  }
+
+  /* Toggle */
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .toggle-row:first-child { border-top: none; }
+
+  .toggle-label {
+    font-size: 11px;
+    color: var(--text);
+  }
+
+  .toggle-label small {
+    display: block;
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+
+  .toggle {
+    position: relative;
+    width: 36px;
+    height: 20px;
+  }
+
+  .toggle input { opacity: 0; width: 0; height: 0; }
+
+  .toggle-track {
+    position: absolute;
+    inset: 0;
+    background: var(--border);
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+
+  .toggle input:checked + .toggle-track {
+    background: var(--accent);
+  }
+
+  .toggle-track::after {
+    content: "";
+    position: absolute;
+    left: 3px;
+    top: 3px;
+    width: 14px;
+    height: 14px;
+    background: #000;
+    transition: transform 0.2s;
+  }
+
+  .toggle input:checked + .toggle-track::after {
+    transform: translateX(16px);
+  }
+
+  /* Button */
+  .btn {
+    width: 100%;
+    padding: 16px;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    font-family: "Syne", sans-serif;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+    margin-top: 8px;
+  }
+
+  .btn:hover { opacity: 0.88; }
+  .btn:active { transform: scale(0.99); }
+  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  /* Status */
+  .status {
+    margin-top: 16px;
+    padding: 14px 16px;
+    font-size: 11px;
+    display: none;
+    border-left: 2px solid var(--accent);
+    background: rgba(200, 240, 77, 0.04);
+    color: var(--text);
+  }
+
+  .status.error {
+    border-color: var(--error);
+    background: rgba(240, 77, 77, 0.04);
+    color: var(--error);
+  }
+
+  .status.show { display: block; }
+
+  /* Progress bar */
+  .progress {
+    height: 2px;
+    background: var(--border);
+    margin-top: 16px;
+    display: none;
+    overflow: hidden;
+  }
+
+  .progress.show { display: block; }
+
+  .progress-bar {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.3s;
+    animation: indeterminate 1.5s infinite;
+  }
+
+  @keyframes indeterminate {
+    0%   { transform: translateX(-100%); width: 60%; }
+    100% { transform: translateX(200%);  width: 60%; }
+  }
+
+  footer {
+    margin-top: 48px;
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+    text-align: center;
+  }
+
+  footer a { color: var(--muted); text-decoration: none; }
+  footer a:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <p class="eyebrow">v1.1.0 — Local Demo</p>
+    <h1>Expressive<span>MIDI</span></h1>
+    <p class="subtitle">Upload a quantised MIDI file. The model adds human-like timing<br>deviations, velocity nuance, and pedal expression learned from<br>professional performances.</p>
+  </header>
+
+  <div class="card">
+    <p class="card-label">01 — Upload</p>
+    <div class="dropzone" id="dropzone">
+
+      <span class="drop-icon">♩</span>
+      <div class="drop-text">
+        <strong>Drop MIDI file here</strong>
+        or click to browse
+      </div>
+    </div>
+    <p class="filename" id="filename"></p>
+  </div>
+
+  <div class="card">
+    <p class="card-label">02 — Configure</p>
+
+    <div class="controls">
+      <div class="control-group">
+        <label>Instrument</label>
+        <div class="seg-control">
+          <input type="radio" name="instrument" id="piano" value="piano" checked>
+          <label for="piano">Piano</label>
+          <input type="radio" name="instrument" id="strings" value="strings">
+          <label for="strings">Strings</label>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label>Strength</label>
+        <div class="slider-wrap">
+          <input type="range" id="strength" min="0.3" max="2.5" step="0.1" value="1.0">
+          <span class="slider-val" id="strengthVal">1.0</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="toggle-row">
+      <div class="toggle-label">
+        Expression Model
+        <small>Velocity + sustain + soft pedal</small>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="useExpr" checked>
+        <div class="toggle-track"></div>
+      </label>
+    </div>
+  </div>
+
+  <button class="btn" id="processBtn" disabled>Humanise</button>
+
+  <div class="progress" id="progress"><div class="progress-bar"></div></div>
+  <div class="status" id="status"></div>
+
+  <footer>
+    <a href="https://github.com/AmlanoViano/ExpressiveMIDI" target="_blank">github.com/AmlanoViano/ExpressiveMIDI</a>
+    &nbsp;·&nbsp; trained on MAESTRO v3
+  </footer>
+</div>
+
+<script>
+const dropzone    = document.getElementById("dropzone");
+const filename    = document.getElementById("filename");
+const processBtn  = document.getElementById("processBtn");
+const strengthEl  = document.getElementById("strength");
+const strengthVal = document.getElementById("strengthVal");
+const progress    = document.getElementById("progress");
+const status      = document.getElementById("status");
+let selectedFile  = null;
+
+function setFile(file) {
+    alert("Please select a .mid or .midi file");
+    return;
+  }
+  selectedFile = file;
+  filename.textContent = "✓  " + file.name;
+  filename.style.display = "block";
+  processBtn.disabled = false;
+}
+
+strengthEl.addEventListener("input", () => {
+  strengthVal.textContent = parseFloat(strengthEl.value).toFixed(1);
+});
+
+// Click dropzone to open file picker
+dropzone.addEventListener("click", () => {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".mid,.midi";
+  input.onchange = () => setFile(input.files[0]);
+  input.click();
+});
+
+dropzone.addEventListener("dragover", e => { e.preventDefault(); dropzone.classList.add("drag-over"); });
+dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag-over"));
+dropzone.addEventListener("drop", e => {
+  e.preventDefault();
+  dropzone.classList.remove("drag-over");
+  setFile(e.dataTransfer.files[0]);
+});
+
+processBtn.addEventListener("click", async () => {
+  processBtn.disabled = true;
+  progress.classList.add("show");
+  status.classList.remove("show", "error");
+
+  const formData = new FormData();
+  formData.append("file",       selectedFile);
+  formData.append("instrument", document.querySelector('input[name="instrument"]:checked').value);
+  formData.append("strength",   strengthEl.value);
+  formData.append("expression", document.getElementById("useExpr").checked ? "true" : "false");
+
+  try {
+    const res = await fetch("/humanise", { method: "POST", body: formData });
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = selectedFile.name.replace(/\.midi?$/, "_humanised.mid");
+    a.click();
+    URL.revokeObjectURL(url);
+    status.textContent = "Done — humanised.mid downloaded.";
+    status.classList.add("show");
+  } catch(err) {
+    status.textContent = "Error: " + err.message;
+    status.classList.add("show", "error");
+  } finally {
+    progress.classList.remove("show");
+    processBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
