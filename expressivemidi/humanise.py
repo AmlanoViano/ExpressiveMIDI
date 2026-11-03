@@ -258,7 +258,8 @@ def humanise_midi(pm: pretty_midi.PrettyMIDI, model, ck, settings: Settings = Se
             if has_cc64:  # 'on' replaces the existing pedalling
                 for inst in part:
                     inst.control_changes = [c for c in inst.control_changes if c.number != 64]
-            rep.pedal_events += _add_pedal(part[0], new_on, new_on + new_dur, on, grid, pred)
+            rep.pedal_events += _add_pedal(part[0], new_on, new_on + new_dur, on,
+                                          np.array([n.pitch for n in notes]), grid, pred)
 
     for inst in pm.instruments:
         _fix_overlaps(inst)
@@ -280,27 +281,46 @@ def humanise_midi(pm: pretty_midi.PrettyMIDI, model, ck, settings: Settings = Se
     return pm, rep
 
 
-def _add_pedal(inst, new_on, new_off, score_on, grid, pred):
-    """Turn per-note pedal probabilities into realistic CC64 events (legato pedalling)."""
+def _add_pedal(inst, new_on, new_off, score_on, pitches, grid, pred):
+    """
+    Turn predictions into realistic CC64 (legato / syncopated pedalling).
+
+    The model decides *whether* a passage is pedalled. *Where* to change the pedal
+    follows the harmony, like a pianist: lift and re-press just after a chord whose
+    pitch classes would clash with what is already ringing under the pedal. Changes
+    are at least 0.25 s apart, and fast runs don't trigger them (pianists let those blur).
+    """
     order = np.argsort(new_on, kind="stable")
     b = grid.to_beats(score_on[order])
     g = np.concatenate([[True], np.diff(b) > 0.03]).cumsum() - 1
     ng = g[-1] + 1
     t = np.full(ng, np.inf)
     np.minimum.at(t, g, new_on[order])
-    p_down = np.bincount(g, pred["pedal"][order], ng) / np.bincount(g, minlength=ng)
-    p_rep = np.bincount(g, pred["repedal"][order], ng) / np.bincount(g, minlength=ng)
-    # median filter to avoid flickering
-    p_down = np.array([np.median(p_down[max(0, i - 1): i + 2]) for i in range(ng)])
-    events, state = [], False
+    cnt = np.bincount(g, minlength=ng)
+    p_down = np.bincount(g, pred["pedal"][order], ng) / cnt
+    p_rep = np.bincount(g, pred["repedal"][order], ng) / cnt
+    p_down = np.array([np.median(p_down[max(0, i - 2): i + 3]) for i in range(ng)])  # no flicker
+    pcs = [set() for _ in range(ng)]
+    for k, pi in zip(g, np.asarray(pitches)[order]):
+        pcs[k].add(int(pi) % 12)
+    gap_prev = np.concatenate([[1.0], np.diff(t)])
+
+    events, state, held, last_change = [], False, set(), -1.0
     for k in range(ng):
-        down = p_down[k] > 0.5
+        down = p_down[k] > 0.45
         if down and not state:
             events.append((t[k] + 0.04, 127))
-            state = True
-        elif down and state and p_rep[k] > 0.35:
-            events.append((max(t[k] - 0.005, 0.0), 0))
-            events.append((t[k] + 0.06, 127))
+            state, held, last_change = True, set(pcs[k]), t[k]
+        elif down and state:
+            clash = len(pcs[k] - held) > 0 and len(held | pcs[k]) > 4
+            new_harmony = len(pcs[k]) >= 2 and len(pcs[k] & held) < len(pcs[k]) / 2
+            wants = clash or new_harmony or p_rep[k] > 0.5
+            if wants and gap_prev[k] > 0.12 and t[k] - last_change > 0.25:
+                events.append((max(t[k] - 0.005, 0.0), 0))
+                events.append((t[k] + 0.06, 127))
+                held, last_change = set(pcs[k]), t[k]
+            else:
+                held |= pcs[k]
         elif not down and state:
             events.append((max(t[k] - 0.005, 0.0), 0))
             state = False

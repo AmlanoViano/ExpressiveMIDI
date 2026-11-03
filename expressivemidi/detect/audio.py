@@ -215,6 +215,13 @@ def _split_items(index, holdout_source=None, seed=0):
             continue
         h = zlib.crc32((it["path"] + str(seed)).encode()) % 100
         (te if h < 10 else va if h < 20 else tr).append(it)
+    # small datasets: make sure validation has at least one track of each class
+    for label in (0, 1):
+        if not any(it["label"] == label for it in va):
+            cand = [it for it in tr if it["label"] == label]
+            if len(cand) > 1:
+                tr.remove(cand[-1])
+                va.append(cand[-1])
     return tr, va, te
 
 

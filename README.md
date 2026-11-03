@@ -92,7 +92,21 @@ The inputs are 22 features that exist in any quantised score: pitch, beat-relati
 
 ### Humaniser results (held-out test pieces)
 
-<!-- RESULTS:HUMANISER -->
+Measured on 85 performances of 16 pieces that were never used in training or validation:
+
+| Target | Model error | No-expression baseline | Correlation with real pianists |
+|---|---|---|---|
+| Micro-timing | 29.1 ms | 32.0 ms | 0.47 |
+| Velocity | 11.8 (MIDI units) | 13.4 | 0.44 |
+| Articulation (log length ratio) | 0.48 | 0.58 | 0.52 |
+| Rubato (log beat-length ratio) | 0.154 | 0.134 | 0.23 |
+| Sustain pedal down | 69.8% accuracy | 69.4% | n/a |
+
+Micro-timing, dynamics and articulation are learned well. Two targets are weak, and the code works around them:
+- **Rubato:** the correlation is positive, but the absolute error is worse than applying no rubato. Pianists disagree a lot on large-scale tempo. The humaniser therefore keeps only the phrase-level shape and removes slow drift, so a piece stays within a few hundred ms of the grid.
+- **Pedal:** the model is no better than the majority-class baseline at predicting it from the score alone. It only decides *whether* a passage is pedalled. *Where* the pedal changes comes from a harmony rule that re-pedals when new notes would clash with what is ringing, as pianists do.
+
+Training notes: about 8 minutes per epoch on a 4-core CPU. Validation loss is best after the first epoch. More epochs, even with transposition and noise augmentation, start memorising the roughly 200 training pieces. The shipped model is that best checkpoint.
 
 "Baseline" means applying no expression, which is what a quantised file does. Lower error and a positive correlation mean the model predicts what real pianists did with music it has never seen. Expressive performance is partly a personal choice, so the correlations will never approach 1.
 
@@ -117,7 +131,16 @@ Training data comes from the same pieces in every class:
 - **random:** programmed plus DAW-style independent jitter;
 - **model:** rendered by this project's humaniser.
 
-<!-- RESULTS:MIDIDETECTOR -->
+Held-out results (pieces and drum sessions never seen in training; 1,454 files):
+
+| | precision | recall |
+|---|---|---|
+| human | 0.96 | 0.95 |
+| programmed | 0.95 | 0.94 |
+| random jitter | 0.83 | 0.78 |
+| model-humanised | 0.85 | 0.93 |
+
+Overall accuracy is 92%, and the human-vs-machine ROC AUC is 0.992. On piano files accuracy is 99.1%; on drums it is 87.7%. As an extra check, 40 random MAESTRO performances that are not part of ASAP were all classified as human. ExpressiveMIDI's own output is detected as "model". That is intended: humanised files should not pass as real performances.
 
 **Limits.** It judges how the notes were *produced or performed*, not who *composed* them. An AI-composed piece that a human played in looks human; a human composition typed into a sequencer looks programmed. Live-played MIDI from non-piano controllers is under-represented in training.
 
@@ -161,6 +184,12 @@ The detector then appears automatically in `expressivemidi detect` and in the we
 **Limits.** No detector catches "any" AI music with certainty. New generators, heavy re-encoding, mastering or re-recording all reduce accuracy. Treat the output as evidence, never as proof, and never use it alone to accuse someone.
 
 ---
+
+## Examples
+
+`examples/` has before/after files you can open in any DAW or in the web app:
+- `ravel_pavane_*` and `chopin_barcarolle_*`: opening sections of two pieces from the held-out test split, with rubato and pedal.
+- `band_loop_*`: piano, bass and drums. Rubato stays off automatically, and the drums get a groove.
 
 ## Retraining everything yourself
 
