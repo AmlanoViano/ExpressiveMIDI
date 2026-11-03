@@ -44,7 +44,7 @@ def cmd_humanise(a):
         rep = humanise_file(f, out, settings=s, model=model, ck=ck)
         print(f"{f} -> {out}")
         print(f"  {rep.notes} notes in {', '.join(rep.parts) or 'no pitched parts'}; drums: {rep.drum_notes}; "
-              f"rubato {rep.rubato:.2f}; avg shift {rep.mean_abs_shift_ms:.1f} ms; "
+              f"rubato {rep.rubato:.2f} (max drift {rep.max_drift_ms:.0f} ms); avg timing shift {rep.mean_abs_shift_ms:.1f} ms; "
               f"avg velocity change {rep.velocity_change:.1f}; pedal events {rep.pedal_events}")
         for w in rep.warnings:
             print(f"  ! {w}")

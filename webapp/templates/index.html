@@ -28,13 +28,13 @@
   .tabs button.on { background: var(--accent); color: #000; font-weight: 500; }
   .card { background: var(--surface); border: 1px solid var(--border); padding: 22px; margin-bottom: 14px; }
   .label { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; display: block; }
-  .drop { border: 1px dashed var(--border); padding: 32px 16px; text-align: center; cursor: pointer; color: var(--muted); }
+  .drop { display: block; border: 1px dashed var(--border); padding: 32px 16px; text-align: center; cursor: pointer; color: var(--muted); }
   .drop.over, .drop:hover { border-color: var(--accent); color: var(--text); }
   .drop input { display: none; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px 22px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px 28px; }
   .row { display: flex; align-items: center; gap: 10px; }
-  .row label { min-width: 92px; color: var(--text); }
-  input[type=range] { flex: 1; accent-color: var(--accent); }
+  .row label { flex: 0 0 96px; color: var(--text); }
+  input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
   .val { color: var(--accent); min-width: 34px; text-align: right; }
   select { background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 6px; font: inherit; flex: 1; }
   .btn { width: 100%; background: var(--accent); color: #000; border: 0; padding: 14px; font: inherit; font-weight: 500;
@@ -136,6 +136,10 @@
 
 <script>
 const $ = id => document.getElementById(id);
+// Playback needs the html-midi-player CDN; hide players if it couldn't load (offline).
+window.addEventListener('load', () => {
+  if (!customElements.get('midi-player')) document.querySelectorAll('midi-player').forEach(p => p.remove());
+});
 function tab(t) {
   $('paneH').classList.toggle('hidden', t !== 'h'); $('paneD').classList.toggle('hidden', t !== 'd');
   $('tabH').classList.toggle('on', t === 'h'); $('tabD').classList.toggle('on', t === 'd');
@@ -155,7 +159,7 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':
 wireDrop($('dropH'), $('fileH'), () => {
   const f = $('fileH').files[0]; if (!f) return;
   $('dropHText').textContent = f.name; $('goH').disabled = false;
-  $('playerIn').src = URL.createObjectURL(f); $('playerIn').classList.remove('hidden');
+  if ($('playerIn')) { $('playerIn').src = URL.createObjectURL(f); $('playerIn').classList.remove('hidden'); }
 });
 $('goH').onclick = async () => {
   $('errH').textContent = ''; $('goH').disabled = true; $('goH').textContent = 'Working…';
@@ -169,7 +173,8 @@ $('goH').onclick = async () => {
     if (!r.ok) throw new Error(j.error || r.statusText);
     const bytes = Uint8Array.from(atob(j.midi), c => c.charCodeAt(0));
     const url = URL.createObjectURL(new Blob([bytes], {type: 'audio/midi'}));
-    $('playerOut').src = url; $('dlH').href = url; $('dlH').download = j.filename;
+    if ($('playerOut')) $('playerOut').src = url;
+    $('dlH').href = url; $('dlH').download = j.filename;
     const rep = j.report;
     $('statsH').innerHTML = [
       [rep.notes, 'notes'], [rep.mean_abs_shift_ms.toFixed(1) + ' ms', 'avg timing shift'],

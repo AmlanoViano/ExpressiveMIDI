@@ -49,7 +49,8 @@ class Report:
     notes: int = 0
     parts: list = field(default_factory=list)
     rubato: float = 0.0
-    mean_abs_shift_ms: float = 0.0
+    mean_abs_shift_ms: float = 0.0   # micro-timing only (excludes rubato)
+    max_drift_ms: float = 0.0        # largest rubato displacement of a beat
     velocity_change: float = 0.0
     pedal_events: int = 0
     drum_notes: int = 0
@@ -184,13 +185,22 @@ def humanise_midi(pm: pretty_midi.PrettyMIDI, model, ck, settings: Settings = Se
         if have.any():
             idx = np.arange(nseg)
             tempo = np.interp(idx, idx[have], acc[have] / cnt[have])
-        tempo = _smooth(tempo, 1.0) * rubato
-        tempo = np.clip(tempo, -0.5, 0.5)
+        # Keep phrase-level rubato, drop section-level tempo changes (the user chose the
+        # tempo): band-pass the curve so the piece never drifts far from the grid.
+        tempo = (_smooth(tempo, 1.0) - _smooth(tempo, 8.0)) * rubato
+        tempo = np.clip(tempo, -0.4, 0.4)
         periods = np.diff(grid.beats)
         scale = np.exp(tempo)
         scale /= (periods * scale).sum() / periods.sum()  # keep total duration
         new_beats = np.concatenate([[grid.beats[0]], grid.beats[0] + np.cumsum(periods * scale)])
+        # Re-anchor: remove slow accumulated drift so the performance stays near the grid
+        drift = new_beats - grid.beats
+        drift = drift - _smooth(drift, 6.0)
+        new_beats = grid.beats + drift
+        p_new = np.maximum(np.diff(new_beats), 0.5 * periods)   # keep strictly increasing
+        new_beats = np.concatenate([[new_beats[0]], new_beats[0] + np.cumsum(p_new)])
         warp = lambda t: grid.to_seconds(grid.to_beats(t), beats=new_beats)
+        rep.max_drift_ms = float(np.max(np.abs(new_beats - grid.beats)) * 1000)
     else:
         warp = lambda t: np.asarray(t, dtype=np.float64)
 
@@ -234,7 +244,7 @@ def humanise_midi(pm: pretty_midi.PrettyMIDI, model, ck, settings: Settings = Se
         new_vel = np.clip(np.round(base_vel + dv), 1, 127)
 
         for k, n in enumerate(notes):
-            shifts.append(abs(new_on[k] - n.start))
+            shifts.append(abs(micro[k]))
             vchanges.append(abs(new_vel[k] - n.velocity))
             n.start = float(new_on[k])
             n.end = float(new_on[k] + new_dur[k])

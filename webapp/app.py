@@ -94,7 +94,10 @@ def create_app():
                 f.save(path)
                 low = name.lower()
                 try:
-                    if low.endswith(MIDI_EXT):
+                    if low.endswith(MIDI_EXT) and not os.path.exists(DEFAULT_MIDI_DET):
+                        results.append(dict(file=name, type="midi", error=(
+                            "No MIDI detector model installed - run `expressivemidi train-midi-detector`.")))
+                    elif low.endswith(MIDI_EXT):
                         from expressivemidi.detect.midi_detector import detect_midi
                         results.append(detect_midi(path, DEFAULT_MIDI_DET))
                     elif low.endswith(AUDIO_EXT):
