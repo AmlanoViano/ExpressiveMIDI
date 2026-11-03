@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ExpressiveMIDI</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@600;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/combine/npm/tone@14.7.58,npm/@magenta/music@1.23.1/es6/core.js,npm/focus-visible@5,npm/html-midi-player@1.5.0"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0a0a0a; --surface: #111; --border: #222; --accent: #c8f04d; --accent2: #4d9ef0;
+    --text: #e8e8e8; --muted: #8a8a8a; --error: #f04d4d; --warn: #f0b84d;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f6f6f2; --surface: #fff; --border: #ddd; --accent: #5f7d00; --accent2: #1f6fc4;
+            --text: #161616; --muted: #666; }
+  }
+  body { background: var(--bg); color: var(--text); font-family: "DM Mono", monospace; font-size: 13px;
+         padding: 40px 16px; display: flex; justify-content: center; }
+  .wrap { width: 100%; max-width: 720px; }
+  h1 { font-family: "Syne", sans-serif; font-size: clamp(2rem, 6vw, 3rem); font-weight: 800; letter-spacing: -0.03em; }
+  h1 span { color: var(--accent); }
+  .eyebrow { font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--accent); margin-bottom: 8px; }
+  .sub { color: var(--muted); margin: 10px 0 28px; line-height: 1.6; }
+  .tabs { display: flex; border: 1px solid var(--border); margin-bottom: 20px; }
+  .tabs button { flex: 1; background: none; border: 0; color: var(--muted); padding: 12px; font: inherit; cursor: pointer; }
+  .tabs button.on { background: var(--accent); color: #000; font-weight: 500; }
+  .card { background: var(--surface); border: 1px solid var(--border); padding: 22px; margin-bottom: 14px; }
+  .label { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; display: block; }
+  .drop { display: block; border: 1px dashed var(--border); padding: 32px 16px; text-align: center; cursor: pointer; color: var(--muted); }
+  .drop.over, .drop:hover { border-color: var(--accent); color: var(--text); }
+  .drop input { display: none; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px 28px; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .row label { flex: 0 0 96px; color: var(--text); }
+  input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
+  .val { color: var(--accent); min-width: 34px; text-align: right; }
+  select { background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 6px; font: inherit; flex: 1; }
+  .btn { width: 100%; background: var(--accent); color: #000; border: 0; padding: 14px; font: inherit; font-weight: 500;
+         letter-spacing: .08em; text-transform: uppercase; cursor: pointer; }
+  .btn:disabled { opacity: .4; cursor: default; }
+  .hint { color: var(--muted); font-size: 11px; margin-top: 8px; line-height: 1.5; }
+  .err { color: var(--error); margin-top: 10px; }
+  .warn { color: var(--warn); margin-top: 6px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 12px 0; }
+  .stat { border: 1px solid var(--border); padding: 10px; }
+  .stat b { display: block; font-size: 18px; color: var(--accent); font-weight: 500; }
+  .stat span { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .1em; }
+  midi-player { display: block; width: 100%; margin: 6px 0 14px; }
+  .result { border-top: 1px solid var(--border); padding: 16px 0; }
+  .result:first-child { border-top: 0; padding-top: 0; }
+  .verdict { font-size: 15px; margin: 6px 0 10px; }
+  .bar { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
+  .bar .name { width: 92px; color: var(--muted); }
+  .bar .track { flex: 1; height: 8px; background: var(--border); }
+  .bar .fill { height: 100%; background: var(--accent2); }
+  .bar .fill.top { background: var(--accent); }
+  .bar .pct { width: 50px; text-align: right; }
+  ul.ev { margin: 10px 0 0 18px; color: var(--muted); line-height: 1.7; }
+  a.dl { color: var(--accent); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="eyebrow">v{{ version }} · runs locally</p>
+  <h1>Expressive<span>MIDI</span></h1>
+  <p class="sub">Make programmed MIDI sound played by a person, or check whether a track or MIDI file was made by a machine or an AI.</p>
+
+  <div class="tabs">
+    <button id="tabH" class="on" onclick="tab('h')">Humanise MIDI</button>
+    <button id="tabD" onclick="tab('d')">Detect AI / machine</button>
+  </div>
+
+  <!-- Humanise -->
+  <section id="paneH">
+    <div class="card">
+      <span class="label">01 · MIDI file</span>
+      <label class="drop" id="dropH">
+        <input type="file" id="fileH" accept=".mid,.midi">
+        <div id="dropHText">Drop a quantised .mid here or click to choose</div>
+      </label>
+      <midi-player id="playerIn" class="hidden" sound-font></midi-player>
+    </div>
+
+    <div class="card">
+      <span class="label">02 · Settings</span>
+      <div class="grid">
+        <div class="row"><label>Strength</label><input type="range" id="strength" min="0" max="2" step="0.1" value="1"><span class="val" id="strengthV">1.0</span></div>
+        <div class="row"><label>Timing</label><input type="range" id="timing" min="0" max="2" step="0.1" value="1"><span class="val" id="timingV">1.0</span></div>
+        <div class="row"><label>Velocity</label><input type="range" id="velocity" min="0" max="2" step="0.1" value="1"><span class="val" id="velocityV">1.0</span></div>
+        <div class="row"><label>Articulation</label><input type="range" id="articulation" min="0" max="2" step="0.1" value="1"><span class="val" id="articulationV">1.0</span></div>
+        <div class="row"><label>Drums</label><input type="range" id="drums" min="0" max="2" step="0.1" value="1"><span class="val" id="drumsV">1.0</span></div>
+        <div class="row"><label>Rubato</label>
+          <select id="rubato"><option value="auto">Auto</option><option value="0">Off (keep tempo)</option><option value="0.5">Gentle</option><option value="1">Natural</option><option value="1.5">Romantic</option></select></div>
+        <div class="row"><label>Pedal</label>
+          <select id="pedal"><option value="auto">Auto (piano)</option><option value="on">Replace existing</option><option value="off">Never</option></select></div>
+        <div class="row"><label>Take #</label><input type="range" id="seed" min="0" max="20" step="1" value="0"><span class="val" id="seedV">0</span></div>
+      </div>
+      <p class="hint">Rubato “Auto” bends the tempo only when there are no drums, because songs with a beat should stay locked to the grid. “Take #” picks a different drum feel.</p>
+    </div>
+
+    <button class="btn" id="goH" disabled>Humanise</button>
+    <div id="errH" class="err"></div>
+
+    <div class="card hidden" id="outH" style="margin-top:14px">
+      <span class="label">03 · Result</span>
+      <div class="stats" id="statsH"></div>
+      <div id="warnH"></div>
+      <midi-player id="playerOut" sound-font></midi-player>
+      <a class="dl" id="dlH" href="#">Download humanised MIDI</a>
+    </div>
+  </section>
+
+  <!-- Detect -->
+  <section id="paneD" class="hidden">
+    <div class="card">
+      <span class="label">Files to check</span>
+      <label class="drop" id="dropD">
+        <input type="file" id="fileD" multiple accept=".mid,.midi,.wav,.mp3,.flac,.ogg,.m4a,.aac,.opus">
+        <div id="dropDText">Drop MIDI or audio files (several at once is fine)</div>
+      </label>
+      <p class="hint">
+        MIDI: tells you whether the notes were <i>played</i> by a person, programmed, randomised or model-generated. It cannot tell who <i>composed</i> them.
+        {% if not midi_ready %}<br><span class="warn">MIDI detector model not found in models/.</span>{% endif %}
+        <br>Audio: {% if audio_ready %}uses your trained audio detector.{% else %}<span class="warn">no audio detector trained yet. See the README, “Training the audio detector”.</span>{% endif %}
+        <br>A score is evidence, not proof. Don't use it on its own to accuse anyone.
+      </p>
+    </div>
+    <button class="btn" id="goD" disabled>Analyse</button>
+    <div id="errD" class="err"></div>
+    <div class="card hidden" id="outD" style="margin-top:14px"></div>
+  </section>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+// Playback needs the html-midi-player CDN; hide players if it couldn't load (offline).
+window.addEventListener('load', () => {
+  if (!customElements.get('midi-player')) document.querySelectorAll('midi-player').forEach(p => p.remove());
+});
+function tab(t) {
+  $('paneH').classList.toggle('hidden', t !== 'h'); $('paneD').classList.toggle('hidden', t !== 'd');
+  $('tabH').classList.toggle('on', t === 'h'); $('tabD').classList.toggle('on', t === 'd');
+}
+['strength','timing','velocity','articulation','drums','seed'].forEach(k => {
+  $(k).oninput = () => $(k + 'V').textContent = k === 'seed' ? $(k).value : (+$(k).value).toFixed(1);
+});
+function wireDrop(drop, input, onFiles) {
+  ['dragover','dragenter'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave','drop'].forEach(e => drop.addEventListener(e, () => drop.classList.remove('over')));
+  drop.addEventListener('drop', ev => { ev.preventDefault(); input.files = ev.dataTransfer.files; onFiles(); });
+  input.onchange = onFiles;
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// Humanise
+wireDrop($('dropH'), $('fileH'), () => {
+  const f = $('fileH').files[0]; if (!f) return;
+  $('dropHText').textContent = f.name; $('goH').disabled = false;
+  if ($('playerIn')) { $('playerIn').src = URL.createObjectURL(f); $('playerIn').classList.remove('hidden'); }
+});
+$('goH').onclick = async () => {
+  $('errH').textContent = ''; $('goH').disabled = true; $('goH').textContent = 'Working…';
+  const fd = new FormData();
+  fd.append('file', $('fileH').files[0]);
+  ['strength','timing','velocity','articulation','drums','seed','pedal'].forEach(k => fd.append(k, $(k).value));
+  fd.append('rubato', $('rubato').value);
+  try {
+    const r = await fetch('/api/humanise', {method: 'POST', body: fd});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    const bytes = Uint8Array.from(atob(j.midi), c => c.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bytes], {type: 'audio/midi'}));
+    if ($('playerOut')) $('playerOut').src = url;
+    $('dlH').href = url; $('dlH').download = j.filename;
+    const rep = j.report;
+    $('statsH').innerHTML = [
+      [rep.notes, 'notes'], [rep.mean_abs_shift_ms.toFixed(1) + ' ms', 'avg timing shift'],
+      [rep.velocity_change.toFixed(1), 'avg velocity change'], [rep.rubato.toFixed(2), 'rubato'],
+      [rep.pedal_events, 'pedal events'], [rep.drum_notes, 'drum hits']
+    ].map(([v, l]) => `<div class="stat"><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join('');
+    $('warnH').innerHTML = rep.warnings.map(w => `<p class="warn">⚠ ${esc(w)}</p>`).join('');
+    $('outH').classList.remove('hidden');
+  } catch (e) { $('errH').textContent = e.message; }
+  $('goH').disabled = false; $('goH').textContent = 'Humanise';
+};
+
+// Detect
+wireDrop($('dropD'), $('fileD'), () => {
+  const n = $('fileD').files.length; $('dropDText').textContent = n + ' file(s) selected'; $('goD').disabled = !n;
+});
+$('goD').onclick = async () => {
+  $('errD').textContent = ''; $('goD').disabled = true; $('goD').textContent = 'Analysing…';
+  const fd = new FormData(); for (const f of $('fileD').files) fd.append('files', f);
+  try {
+    const r = await fetch('/api/detect', {method: 'POST', body: fd});
+    const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText);
+    $('outD').innerHTML = j.results.map(renderResult).join(''); $('outD').classList.remove('hidden');
+  } catch (e) { $('errD').textContent = e.message; }
+  $('goD').disabled = false; $('goD').textContent = 'Analyse';
+};
+function bar(name, p, top) {
+  return `<div class="bar"><span class="name">${esc(name)}</span><div class="track"><div class="fill ${top ? 'top' : ''}" style="width:${(p*100).toFixed(1)}%"></div></div><span class="pct">${(p*100).toFixed(1)}%</span></div>`;
+}
+function renderResult(r) {
+  let h = `<div class="result"><span class="label">${esc(r.file)} · ${esc(r.type || '')}</span>`;
+  if (r.error) return h + `<p class="err">${esc(r.error)}</p></div>`;
+  h += `<p class="verdict">${esc(r.verdict_text)}</p>`;
+  if (r.type === 'midi') {
+    const best = Math.max(...Object.values(r.probabilities));
+    for (const [k, v] of Object.entries(r.probabilities)) h += bar(k, v, v === best);
+    h += '<ul class="ev">' + r.evidence.map(e => `<li>${esc(e)}</li>`).join('') + '</ul>';
+  } else {
+    h += bar('P(AI)', r.p_ai, true);
+    h += `<p class="hint">${(r.excerpts_flagged*100).toFixed(0)}% of ${r.excerpts} excerpts flagged · ${r.duration_s}s</p>`;
+  }
+  h += (r.notes || []).map(n => `<p class="hint">· ${esc(n)}</p>`).join('');
+  return h + '</div>';
+}
+</script>
+</body>
+</html>

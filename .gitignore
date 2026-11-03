@@ -1,9 +1,13 @@
 venv/
-data/raw/
+.venv/
+/data/
+!/data/README.md
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
-experiments/*.json
 *.egg-info/
+build/
 .env
 wandb/
+*_humanised.mid
+.pytest_cache/

@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "expressivemidi"
+dynamic = ["version"]
+description = "Humanise quantised MIDI with a model trained on real piano performances, and detect machine/AI-made music."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+  "numpy>=1.26", "pandas>=2.0", "pretty_midi>=0.2.10", "mido>=1.3", "torch>=2.2",
+  "scikit-learn>=1.4", "joblib>=1.3", "flask>=3.0", "librosa>=0.10", "soundfile>=0.12", "scipy>=1.11",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+expressivemidi = "expressivemidi.cli:main"
+
+[tool.setuptools]
+packages = ["expressivemidi", "expressivemidi.data", "expressivemidi.models", "expressivemidi.detect", "webapp"]
+
+[tool.setuptools.package-data]
+webapp = ["templates/*.html"]
+
+[tool.setuptools.dynamic]
+version = { attr = "expressivemidi.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::UserWarning", "ignore::RuntimeWarning", "ignore::DeprecationWarning"]
