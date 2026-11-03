@@ -180,8 +180,8 @@ def main(argv=None):
     t.add_argument("--out", default=DEFAULT_HUMANISER)
     t.add_argument("--epochs", type=int, default=30)
     t.add_argument("--batch-size", type=int, default=64)
-    t.add_argument("--lr", type=float, default=5e-4)
-    t.add_argument("--patience", type=int, default=6)
+    t.add_argument("--lr", type=float, default=3e-4)
+    t.add_argument("--patience", type=int, default=4)
     t.add_argument("--max-minutes", type=float, default=None)
     t.set_defaults(fn=cmd_train_humaniser)
 

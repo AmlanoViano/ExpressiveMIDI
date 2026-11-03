@@ -28,8 +28,13 @@ def load_split(path):
 class WindowDataset(Dataset):
     """Fixed-length windows that never cross piece boundaries."""
 
-    def __init__(self, X, Y, M, lengths, x_mean, x_std, y_mean, y_std, seq_len=128, stride=64):
-        self.X = ((X - x_mean) / x_std).astype(np.float32)
+    def __init__(self, X, Y, M, lengths, x_mean, x_std, y_mean, y_std, seq_len=128, stride=64,
+                 augment=False):
+        self.X = X.astype(np.float32)
+        self.x_mean, self.x_std = x_mean.astype(np.float32), x_std.astype(np.float32)
+        self.augment = augment
+        self.i_pitch = FEATURE_NAMES.index("pitch_c")
+        self.i_sin, self.i_cos = FEATURE_NAMES.index("pc_sin"), FEATURE_NAMES.index("pc_cos")
         Yn = Y.copy()
         Yn[:, :REGRESSION_TARGETS] = (Y[:, :REGRESSION_TARGETS] - y_mean) / y_std
         self.Y, self.M = Yn.astype(np.float32), M.astype(np.float32)
@@ -52,7 +57,18 @@ class WindowDataset(Dataset):
         x = np.zeros((L, self.X.shape[1]), np.float32)
         y = np.zeros((L, N_TARGETS), np.float32)
         m = np.zeros((L, N_TARGETS), np.float32)
-        x[:n], y[:n], m[:n] = self.X[s:s + n], self.Y[s:s + n], self.M[s:s + n]
+        raw = self.X[s:s + n].copy()
+        if self.augment:  # random transposition: same music, different key/register
+            k = np.random.randint(-6, 7)
+            raw[:, self.i_pitch] += k / 24.0
+            a = 2 * np.pi * k / 12
+            sn, cs = raw[:, self.i_sin].copy(), raw[:, self.i_cos].copy()
+            raw[:, self.i_sin] = sn * np.cos(a) + cs * np.sin(a)
+            raw[:, self.i_cos] = cs * np.cos(a) - sn * np.sin(a)
+        raw = (raw - self.x_mean) / self.x_std
+        if self.augment:
+            raw += np.random.normal(0, 0.05, raw.shape).astype(np.float32)
+        x[:n], y[:n], m[:n] = raw, self.Y[s:s + n], self.M[s:s + n]
         pad = np.arange(L) >= n
         return torch.from_numpy(x), torch.from_numpy(y), torch.from_numpy(m), torch.from_numpy(pad)
 
@@ -108,7 +124,8 @@ def evaluate(model, loader, y_mean, y_std, device):
 
 
 def train(data_dir="data/processed", out_path="models/humaniser.pt", epochs=30, batch_size=64,
-          lr=5e-4, patience=6, seq_len=128, d_model=128, num_layers=3, threads=None, max_minutes=None):
+          lr=3e-4, patience=4, seq_len=128, d_model=128, num_layers=3, threads=None, max_minutes=None,
+          dropout=0.25, weight_decay=0.05):
     if threads:
         torch.set_num_threads(threads)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -122,14 +139,15 @@ def train(data_dir="data/processed", out_path="models/humaniser.pt", epochs=30, 
     y_mean = np.array([(Ytr[:, k][Mtr[:, k] > 0]).mean() for k in range(r)])
     y_std = np.array([(Ytr[:, k][Mtr[:, k] > 0]).std() + 1e-6 for k in range(r)])
 
-    tr = WindowDataset(Xtr, Ytr, Mtr, Ltr, x_mean, x_std, y_mean, y_std, seq_len, seq_len // 2)
+    tr = WindowDataset(Xtr, Ytr, Mtr, Ltr, x_mean, x_std, y_mean, y_std, seq_len, seq_len // 2, augment=True)
     va = WindowDataset(Xva, Yva, Mva, Lva, x_mean, x_std, y_mean, y_std, seq_len, seq_len)
     tl = DataLoader(tr, batch_size=batch_size, shuffle=True, num_workers=0, drop_last=True)
     vl = DataLoader(va, batch_size=batch_size * 2, shuffle=False, num_workers=0)
     print(f"device={device} train windows={len(tr)} val windows={len(va)}")
 
-    model = HumaniserNet(len(FEATURE_NAMES), N_TARGETS, d_model=d_model, num_layers=num_layers).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-2)
+    model = HumaniserNet(len(FEATURE_NAMES), N_TARGETS, d_model=d_model, num_layers=num_layers,
+                         dropout=dropout).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     total_steps = epochs * len(tl)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=lr, total_steps=total_steps, pct_start=0.1)
     ym_t = torch.tensor(y_mean, device=device, dtype=torch.float32)
