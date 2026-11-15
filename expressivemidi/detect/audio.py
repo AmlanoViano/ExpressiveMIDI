@@ -14,6 +14,9 @@ Honest limitations (also printed by the CLI)
     * Heavy re-processing (low-bitrate MP3, mastering chains, recording off speakers)
       degrades accuracy. Robustness augmentation reduces but does not remove this.
     * A probability is evidence, not proof. Never use it alone to accuse anyone.
+    * Everything is analysed at 16 kHz after a low-bitrate MP3 round trip (see FRONTEND), so
+      the model cannot use content above 8 kHz, by design: the public AI training sets
+      contain none, and real music does, which would otherwise be a trivial shortcut.
 
 Data layout expected by `prepare`:
     data/audio/real/<source>/**/*.mp3|wav|flac|ogg|m4a
@@ -21,8 +24,10 @@ Data layout expected by `prepare`:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import zlib
 from concurrent.futures import ProcessPoolExecutor
 
@@ -31,22 +36,38 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-SR = 32000
-N_FFT = 2048
-HOP = 320            # 10 ms
+# Format-matched front-end. The public AI datasets are distributed in a format that
+# real-music datasets are not: SONICS (Suno/Udio) is 16 kHz mono MP3 at ~36 kbps, while
+# FMA is 44.1 kHz MP3 at 128-320 kbps. Left alone, a detector learns "no energy above
+# 8 kHz / low-bitrate codec => AI", which says nothing about generation. So every track,
+# real or AI, in training and at inference, is resampled to 16 kHz and passed through the
+# same low-bitrate MP3 codec before the spectrogram is taken.
+SR = 16000
+N_FFT = 1024
+HOP = 160            # 10 ms
 N_MELS = 128
 EXCERPT_S = 6.0
 EXCERPT_FRAMES = int(EXCERPT_S * SR / HOP) + 1
 AUDIO_EXT = (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus")
+FRONTEND = "sr16k-mp3cbr32-64-v1"   # stored in the cache and checkpoints; must match
+CODEC_KBPS = (32, 64)               # training range; inference uses the midpoint
+INFER_KBPS = 48
 
 
 # --------------------------------------------------------------------------------------
 # Audio front-end
 # --------------------------------------------------------------------------------------
+PREROLL_S = 0.25
+
+
 def load_audio(path, sr=SR, max_seconds=None, offset=0.0):
     import librosa
-    y, _ = librosa.load(path, sr=sr, mono=True, offset=offset, duration=max_seconds)
-    return y.astype(np.float32)
+    # Seeking into an MP3 corrupts the first decoded frame(s) (no bit reservoir). Only MP3
+    # sources would carry that glitch, so decode a short pre-roll and discard it.
+    pre = min(PREROLL_S, offset)
+    dur = None if max_seconds is None else max_seconds + pre
+    y, _ = librosa.load(path, sr=sr, mono=True, offset=offset - pre, duration=dur)
+    return y[int(round(pre * sr)):].astype(np.float32)
 
 
 _MEL = {}
@@ -61,17 +82,35 @@ def logmel(y, sr=SR):
     return np.log(M + 1e-8).astype(np.float32)  # (n_mels, frames)
 
 
+def mp3_roundtrip(y, kbps, sr=SR):
+    """Encode to constant-bitrate MP3 and decode again (libsndfile >= 1.1)."""
+    import io
+
+    import soundfile as sf
+    # libsndfile maps compression_level 0..1 linearly onto the MPEG-2 L3 range (160..8 kbps
+    # at 16 kHz); measured: 0.6 -> 64 kbps, 0.8 -> 40 kbps (CBR).
+    level = float(np.clip(1.0 - kbps / 160.0, 0.0, 0.95))
+    buf = io.BytesIO()
+    sf.write(buf, np.clip(y, -1, 1), sr, format="MP3", bitrate_mode="CONSTANT", compression_level=level)
+    buf.seek(0)
+    z, _ = sf.read(buf, dtype="float32")
+    if z.ndim > 1:
+        z = z.mean(1)
+    z = z[: len(y)]
+    return np.pad(z, (0, len(y) - len(z))).astype(np.float32)
+
+
 def augment_wave(y, rng):
     """Robustness augmentation: gain, EQ tilt, band-limiting, resampling, noise."""
     import scipy.signal as sps
     if rng.random() < 0.5:
         y = y * rng.uniform(0.3, 1.0)
-    if rng.random() < 0.3:  # band-limit like low-bitrate encoders (16 kHz / 11 kHz cut-offs)
-        cutoff = rng.choice([11000, 15000, 16000])
+    if rng.random() < 0.3:  # band-limit further, like very low-bitrate encoders
+        cutoff = rng.choice([5000, 6000, 7000])
         b, a = sps.butter(6, cutoff / (SR / 2), "low")
         y = sps.lfilter(b, a, y).astype(np.float32)
     if rng.random() < 0.2:  # resample through a lower rate
-        lo = int(rng.choice([16000, 22050, 24000]))
+        lo = int(rng.choice([8000, 11025, 12000]))
         y = sps.resample_poly(sps.resample_poly(y, lo, SR), SR, lo).astype(np.float32)[: len(y)]
     if rng.random() < 0.2:  # gentle EQ tilt
         b, a = sps.butter(1, rng.uniform(300, 3000) / (SR / 2), rng.choice(["low", "high"]))
@@ -127,18 +166,39 @@ def list_tracks(root):
         base = os.path.join(root, label_name)
         if not os.path.isdir(base):
             continue
-        for dirpath, _, files in os.walk(base):
+        for dirpath, dirs, files in os.walk(base):
+            dirs[:] = [d for d in dirs if d != "__MACOSX" and not d.startswith(".")]
             rel = os.path.relpath(dirpath, base)
             source = rel.split(os.sep)[0] if rel != "." else label_name
             for f in files:
-                if f.lower().endswith(AUDIO_EXT):
+                # "._name.wav" are macOS resource forks (metadata, not audio) left in archives
+                if f.lower().endswith(AUDIO_EXT) and not f.startswith("."):
                     items.append((os.path.join(dirpath, f), label, f"{label_name}/{source}"))
     return sorted(items)
 
 
+def _cache_key(path):
+    # 64-bit hash: a 32-bit CRC collides with ~40% probability at 60k tracks, and a
+    # collision silently reuses another track's spectrogram (and label).
+    # The front-end is part of the key so a stale cache from another front-end is never reused.
+    return hashlib.sha1((FRONTEND + "|" + os.path.abspath(path)).encode()).hexdigest()[:16]
+
+
+def _group_key(item):
+    """Tracks that are near-duplicates must land in the same split.
+
+    Datasets name sibling generations with a numeric suffix (SONICS: fake_00001_suno_0 /
+    _1, two songs from one prompt) or reuse one file name for the same prompt across
+    generators (FakeMusicCaps: <musiccaps-id>.wav under each generator folder). So the
+    group is the file stem without a trailing `_<n>`, within one class.
+    """
+    stem = os.path.splitext(os.path.basename(item["path"]))[0]
+    return f"{item['label']}:{re.sub(r'_\d+$', '', stem)}"
+
+
 def _prepare_one(args):
     path, label, source, cache_dir, n_excerpts, augment, seed = args
-    key = f"{zlib.crc32(path.encode()):08x}"
+    key = _cache_key(path)
     out = os.path.join(cache_dir, key + ".npy")
     if os.path.exists(out):
         return dict(key=key, path=path, label=label, source=source)
@@ -155,6 +215,7 @@ def _prepare_one(args):
             y = np.pad(y, (0, max(0, int(EXCERPT_S * SR) - len(y))))
             if augment and rng.random() < 0.5:
                 y = augment_wave(y, rng)
+            y = mp3_roundtrip(y, int(rng.integers(CODEC_KBPS[0], CODEC_KBPS[1] + 1)))
             mels.append(logmel(y)[:, :EXCERPT_FRAMES])
         if not mels:
             return None
@@ -175,6 +236,8 @@ def prepare(root="data/audio", cache_dir="data/audio_cache", n_excerpts=8, worke
         index = [r for r in ex.map(_prepare_one, jobs, chunksize=4) if r is not None]
     with open(os.path.join(cache_dir, "index.json"), "w") as f:
         json.dump(index, f)
+    with open(os.path.join(cache_dir, "frontend.json"), "w") as f:
+        json.dump(dict(frontend=FRONTEND, sr=SR), f)
     by = {}
     for r in index:
         by[r["source"]] = by.get(r["source"], 0) + 1
@@ -213,7 +276,7 @@ def _split_items(index, holdout_source=None, seed=0):
         if holdout_source and it["source"].endswith("/" + holdout_source):
             te.append(it)
             continue
-        h = zlib.crc32((it["path"] + str(seed)).encode()) % 100
+        h = zlib.crc32((_group_key(it) + str(seed)).encode()) % 100
         (te if h < 10 else va if h < 20 else tr).append(it)
     # small datasets: make sure validation has at least one track of each class
     for label in (0, 1):
@@ -252,8 +315,21 @@ def _metrics(items, logits):
 
 
 def train(cache_dir="data/audio_cache", out_path="models/audio_detector.pt", epochs=20, batch_size=32,
-          lr=1e-3, holdout_source=None, width=32, workers=4, patience=4):
+          lr=1e-3, holdout_source=None, width=32, workers=4, patience=4, require_gpu=False):
+    if require_gpu and not torch.cuda.is_available():
+        raise SystemExit("--require-gpu was given but CUDA is not available "
+                         f"(torch {torch.__version__}, built for CUDA {torch.version.cuda}).")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(device)} "
+              f"(compute capability {'.'.join(map(str, torch.cuda.get_device_capability(device)))})", flush=True)
+    else:
+        print("WARNING: CUDA not available, training on CPU (slow).", flush=True)
+    fe_path = os.path.join(cache_dir, "frontend.json")
+    fe = json.load(open(fe_path)).get("frontend") if os.path.exists(fe_path) else None
+    if fe != FRONTEND:
+        raise SystemExit(f"Cache {cache_dir} was built with front-end {fe!r}, this code uses "
+                         f"{FRONTEND!r}. Re-run `expressivemidi audio-prepare`.")
     with open(os.path.join(cache_dir, "index.json")) as f:
         index = json.load(f)
     tr, va, te = _split_items(index, holdout_source)
@@ -293,20 +369,43 @@ def train(cache_dir="data/audio_cache", out_path="models/audio_detector.pt", epo
               flush=True)
         if score > best:
             best, bad = score, 0
-            torch.save(dict(state_dict=model.state_dict(), width=width, sr=SR, val=m,
+            torch.save(dict(state_dict=model.state_dict(), width=width, sr=SR, frontend=FRONTEND, val=m,
                             holdout=holdout_source), out_path)
         else:
             bad += 1
             if bad >= patience:
                 break
-    ck = torch.load(out_path, map_location=device, weights_only=False)
-    model.load_state_dict(ck["state_dict"])
     if te:
-        tm = _metrics(te, _track_scores(model, dl(te, False), len(te), device))
-        print("TEST:", json.dumps(tm, indent=1))
-        ck["test"] = tm
-        torch.save(ck, out_path)
+        evaluate(cache_dir, out_path, batch_size=batch_size, workers=workers)
     return out_path
+
+
+def evaluate(cache_dir="data/audio_cache", model_path="models/audio_detector.pt", batch_size=32, workers=4,
+             write=True):
+    """Test-split metrics for a saved checkpoint (same split as its training run).
+
+    Also usable when training was interrupted: the best checkpoint is saved after each
+    improving epoch, but the test evaluation normally runs only at the end of train().
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ck = torch.load(model_path, map_location=device, weights_only=False)
+    if ck.get("frontend") != FRONTEND:
+        raise SystemExit(f"{model_path} uses front-end {ck.get('frontend')!r}, expected {FRONTEND!r}.")
+    with open(os.path.join(cache_dir, "index.json")) as f:
+        index = json.load(f)
+    _, _, te = _split_items(index, ck.get("holdout"))
+    if not te:
+        raise SystemExit("Empty test split.")
+    model = AudioDetector(ck.get("width", 32)).to(device)
+    model.load_state_dict(ck["state_dict"])
+    loader = torch.utils.data.DataLoader(ExcerptDataset(cache_dir, te, False), batch_size=batch_size,
+                                         num_workers=workers, pin_memory=device.type == "cuda")
+    tm = _metrics(te, _track_scores(model, loader, len(te), device))
+    print("TEST:", json.dumps(tm, indent=1))
+    if write:
+        ck["test"] = tm
+        torch.save(ck, model_path)
+    return tm
 
 
 # --------------------------------------------------------------------------------------
@@ -318,6 +417,9 @@ _AUD = {}
 def load_audio_detector(path="models/audio_detector.pt"):
     if path not in _AUD:
         ck = torch.load(path, map_location="cpu", weights_only=False)
+        if ck.get("frontend") != FRONTEND:
+            raise ValueError(f"{path} was trained with audio front-end {ck.get('frontend')!r}; this "
+                             f"version uses {FRONTEND!r}. Retrain with `expressivemidi train-audio-detector`.")
         m = AudioDetector(ck.get("width", 32))
         m.load_state_dict(ck["state_dict"])
         m.eval()
@@ -334,7 +436,7 @@ def detect_audio(path, detector_path="models/audio_detector.pt", max_excerpts=30
     if len(y) < n:
         y = np.pad(y, (0, n - len(y)))
     starts = np.linspace(0, len(y) - n, min(max_excerpts, max(1, int(dur // 3)))).astype(int)
-    mels = np.stack([logmel(y[s:s + n])[:, :EXCERPT_FRAMES] for s in starts])
+    mels = np.stack([logmel(mp3_roundtrip(y[s:s + n], INFER_KBPS))[:, :EXCERPT_FRAMES] for s in starts])
     logits = model(torch.from_numpy(mels)).numpy()
     p = float(1 / (1 + np.exp(-logits.mean())))
     flagged = float(np.mean(logits > 0))
