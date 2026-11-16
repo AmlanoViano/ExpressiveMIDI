@@ -194,21 +194,18 @@ Training ran on an RTX 5060 Laptop GPU at about 25 min per epoch. It was **stopp
 - FMA false alarms are 0% in every genre except Experimental (1 of 224) and Jazz (1 of 38).
 - SONICS songs all have vocals, but vocal Jamendo and FMA tracks are not flagged. So "has vocals" is not what the model learned.
 
-**Unseen generators: the important limitation.** To test generalisation, a separate model was trained with one generator removed entirely, then tested on it. These hold-out models were trained for **4 epochs** to save time, fewer than the main model.
+**Unseen generators: the important limitation.** To test generalisation, a separate model was trained with one generator removed entirely, then tested on it. To save time, these hold-out models were trained for fewer epochs than the main model: 4 for Udio, and 3 for Stable Audio Open (that run was stopped during epoch 4; the checkpoint is the epoch-3 one, validation AUC 1.000).
 
 | Held out | Detected at the normal 0.5 threshold | AUC, held-out vs real test tracks | Detected at a threshold giving 1% false alarms |
 |---|---|---|---|
 | Udio (5,035 songs) | **0.0%** | 0.886 | 2.3% |
-| Stable Audio Open | *pending, not yet run* | | |
+| Stable Audio Open (2,500 clips) | **31.6%** | 0.975 | 68.9% |
 
-With Udio unseen, the model catches **none** of the Udio songs, even though Suno songs, which are similar, were in training. Every generator it *was* trained on is still caught at 99–100%. In practice: **this detector recognises the generators it was trained on. It should not be expected to catch a new or unseen generator.** Udio versions newer than those in SONICS, and services not listed above, count as unseen.
+With Udio unseen, the model catches **none** of the Udio songs, even though Suno songs, which are similar, were in training.
 
-To run the pending Stable Audio hold-out:
+Stable Audio Open does better but is still far from the 98–100% seen for trained generators. At the normal threshold the model catches only about a third of its clips (median P(AI) 0.14). Its scores are clearly separated from real music (AUC 0.975), but a stricter threshold is needed to use that, and it then catches about two thirds. This easier case is not strong evidence of generalisation. Its FakeMusicCaps siblings (MusicGen, AudioLDM2, MusicLDM, Mustango) stayed in training and share its exact 2,500 MusicCaps prompts and its 10-second clip format. Some of the separation may therefore come from that shared dataset format rather than from recognising a new generator.
 
-```
-.\venv\Scripts\expressivemidi.exe train-audio-detector --holdout-source stable_audio --epochs 4 --out models/audio_holdout_stable_audio.pt
-.\venv\Scripts\python.exe scripts\holdout_separation.py models\audio_holdout_stable_audio.pt
-```
+Every generator the model *was* trained on is still caught at 99–100% in both hold-out runs. In practice: **this detector recognises the generators it was trained on. It should not be expected to reliably catch a new or unseen generator.** It may partly catch one that closely resembles a trained generator, but don't rely on that. Udio versions newer than those in SONICS, and services not listed above, count as unseen.
 
 **Other limitations:**
 - Real music comes only from FMA (independent, mostly amateur releases). Commercially mastered chart music was only tested indirectly (Jamendo is also independent music). False-alarm rates on heavily produced commercial releases are not measured.
