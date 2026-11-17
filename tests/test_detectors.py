@@ -45,6 +45,64 @@ def test_audio_model_forward_and_logmel():
     assert out.shape == (2,)
 
 
+def test_audio_split_keeps_near_duplicates_together():
+    from expressivemidi.detect.audio import _split_items
+    index = []
+    for i in range(300):  # SONICS-style siblings: two songs per prompt
+        for k in (0, 1):
+            index.append(dict(path=f"ai/suno/fake_{i:05d}_suno_{k}.mp3", label=1, source="ai/suno"))
+    for i in range(300):  # FakeMusicCaps-style: same prompt file name under each generator
+        for gen in ("musicgen", "audioldm2"):
+            index.append(dict(path=f"ai/{gen}/clip{i}.wav", label=1, source=f"ai/{gen}"))
+        index.append(dict(path=f"real/fma/{i:06d}.mp3", label=0, source="real/fma"))
+    tr, va, te = _split_items(index)
+    split_of = {}
+    for name, part in (("tr", tr), ("va", va), ("te", te)):
+        for it in part:
+            stem = it["path"].rsplit("/", 1)[1].rsplit(".", 1)[0]
+            group = stem.rsplit("_", 1)[0] if "suno" in stem else stem
+            split_of.setdefault(group, set()).add(name)
+    assert all(len(s) == 1 for s in split_of.values())
+    assert len(te) > 0 and len(va) > 0
+
+
+def test_mp3_roundtrip_preserves_length_and_removes_format_cue():
+    from expressivemidi.detect.audio import SR, mp3_roundtrip
+    rng = np.random.default_rng(0)
+    y = (0.2 * rng.standard_normal(SR * 3)).astype(np.float32)
+    z = mp3_roundtrip(y, 40)
+    assert z.shape == y.shape and z.dtype == np.float32
+    assert 0.1 < np.std(z) / np.std(y) < 1.5      # still the same signal level
+    assert not np.allclose(z, y, atol=1e-3)       # the codec was actually applied
+
+
+def test_train_refuses_cache_from_other_frontend(tmp_path):
+    import json
+    from expressivemidi.detect import audio
+    (tmp_path / "index.json").write_text("[]")
+    (tmp_path / "frontend.json").write_text(json.dumps(dict(frontend="sr32k-old")))
+    with pytest.raises(SystemExit, match="front-end"):
+        audio.train(str(tmp_path), str(tmp_path / "x.pt"), epochs=1)
+
+
+def test_list_tracks_skips_macos_metadata(tmp_path):
+    from expressivemidi.detect.audio import list_tracks
+    for rel in ("ai/musicgen/a.wav", "ai/musicgen/._a.wav", "ai/__MACOSX/musicgen/._a.wav",
+                "real/fma/000/000002.mp3", "real/fma/000/notes.txt"):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"x")
+    got = sorted((os.path.relpath(p, tmp_path).replace(os.sep, "/"), lab, src)
+                 for p, lab, src in list_tracks(str(tmp_path)))
+    assert got == [("ai/musicgen/a.wav", 1, "ai/musicgen"), ("real/fma/000/000002.mp3", 0, "real/fma")]
+
+
+def test_audio_cache_keys_are_distinct():
+    from expressivemidi.detect.audio import _cache_key
+    keys = {_cache_key(f"data/audio/real/fma/{i:06d}.mp3") for i in range(100000)}
+    assert len(keys) == 100000
+
+
 def test_audio_pipeline_end_to_end(tmp_path):
     """prepare -> train -> detect on tiny synthetic data (checks the plumbing, not accuracy)."""
     sf = pytest.importorskip("soundfile")

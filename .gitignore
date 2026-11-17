@@ -11,3 +11,5 @@ build/
 wandb/
 *_humanised.mid
 .pytest_cache/
+# measurement-only audio detector variants (see README)
+models/audio_holdout_*.pt

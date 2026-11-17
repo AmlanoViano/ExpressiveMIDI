@@ -127,7 +127,12 @@ def cmd_audio_prepare(a):
 def cmd_train_audio(a):
     from .detect.audio import train
     train(a.cache, a.out, epochs=a.epochs, batch_size=a.batch_size, lr=a.lr,
-          holdout_source=a.holdout_source, workers=a.workers)
+          holdout_source=a.holdout_source, workers=a.workers, require_gpu=a.require_gpu)
+
+
+def cmd_test_audio(a):
+    from .detect.audio import evaluate
+    evaluate(a.cache, a.model, batch_size=a.batch_size, workers=a.workers, write=not a.no_write)
 
 
 def cmd_serve(a):
@@ -217,7 +222,17 @@ def main(argv=None):
     ta.add_argument("--workers", type=int, default=4)
     ta.add_argument("--holdout-source", default=None,
                     help="e.g. 'udio': exclude ai/udio from training and test on it (unseen-generator check)")
+    ta.add_argument("--require-gpu", action="store_true",
+                    help="fail instead of falling back to CPU when CUDA is unavailable")
     ta.set_defaults(fn=cmd_train_audio)
+
+    tt = sub.add_parser("test-audio-detector", help="test-split metrics for a trained audio detector")
+    tt.add_argument("--cache", default="data/audio_cache")
+    tt.add_argument("--model", default=DEFAULT_AUDIO_DET)
+    tt.add_argument("--batch-size", type=int, default=32)
+    tt.add_argument("--workers", type=int, default=4)
+    tt.add_argument("--no-write", action="store_true", help="don't store the metrics in the checkpoint")
+    tt.set_defaults(fn=cmd_test_audio)
 
     a = p.parse_args(argv)
     a.fn(a)
